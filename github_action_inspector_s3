@@ -1,0 +1,168 @@
+name: Display Findings Example
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    branches:
+      - '*'
+
+permissions:
+      id-token: write
+      contents: read
+
+jobs:
+  daily_job:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    environment:
+      name: plugin-development
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          audience: sts.amazonaws.com
+
+      - name: Verify AWS Identity
+        run: |
+          aws sts get-caller-identity
+          echo "Using role: ${{ secrets.AWS_ROLE_ARN }}"
+          echo "AWS Region: ${{ secrets.AWS_REGION }}"
+
+      - name: Inspector Scan
+        id: inspector
+        uses: aws-actions/vulnerability-scan-github-action-for-amazon-inspector@v1
+        with:
+          artifact_type: 'container'
+          artifact_path: 'ubuntu:14.04'
+          display_vulnerability_findings: "enabled"
+          critical_threshold: 1
+          high_threshold: 1
+          medium_threshold: 1
+          low_threshold: 1
+          other_threshold: 1
+          sbomgen_version: "latest"
+
+      # Display scan results in console
+      - name: Display Scan Results
+        run: |
+          echo "=== Inspector Scan Results ==="
+          if [ -f "${{ steps.inspector.outputs.inspector_scan_results_csv }}" ]; then
+            echo "=== CSV Output ==="
+            cat "${{ steps.inspector.outputs.inspector_scan_results_csv }}"
+          fi
+          
+          if [ -f "${{ steps.inspector.outputs.inspector_scan_results }}" ]; then
+            echo "=== JSON Output ==="
+            cat "${{ steps.inspector.outputs.inspector_scan_results }}" | jq '.'
+            
+            echo "=== Summary Statistics ==="
+            echo "Total findings: $(cat "${{ steps.inspector.outputs.inspector_scan_results }}" | jq '.findings | length // 0')"
+            echo "Critical: $(cat "${{ steps.inspector.outputs.inspector_scan_results }}" | jq '[.findings[]? | select(.severity=="CRITICAL")] | length // 0')"
+            echo "High: $(cat "${{ steps.inspector.outputs.inspector_scan_results }}" | jq '[.findings[]? | select(.severity=="HIGH")] | length // 0')"
+            echo "Medium: $(cat "${{ steps.inspector.outputs.inspector_scan_results }}" | jq '[.findings[]? | select(.severity=="MEDIUM")] | length // 0')"
+            echo "Low: $(cat "${{ steps.inspector.outputs.inspector_scan_results }}" | jq '[.findings[]? | select(.severity=="LOW")] | length // 0')"
+          fi
+          
+          if [ -f "${{ steps.inspector.outputs.inspector_scan_results_markdown }}" ]; then
+            echo "=== Markdown Output ==="
+            cat "${{ steps.inspector.outputs.inspector_scan_results_markdown }}"
+          fi
+          
+          if [ -f "${{ steps.inspector.outputs.artifact_sbom }}" ]; then
+            echo "=== SBOM Output ==="
+            cat "${{ steps.inspector.outputs.artifact_sbom }}" | jq '.'
+          fi
+
+      # Add timestamp to filename
+      - name: Get timestamp
+        id: timestamp
+        run: echo "timestamp=$(date +'%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+
+      # Create findings directory and copy files
+      - name: Prepare findings directory
+        run: |
+          mkdir -p findings
+          for file in \
+            "${{ steps.inspector.outputs.inspector_scan_results_csv }}" \
+            "${{ steps.inspector.outputs.inspector_scan_results }}" \
+            "${{ steps.inspector.outputs.artifact_sbom }}" \
+            "${{ steps.inspector.outputs.inspector_scan_results_markdown }}"; do
+            if [ -f "$file" ]; then
+              cp "$file" "findings/$(basename "$file")"
+            fi
+          done
+
+      # Upload to S3
+      - name: Upload to S3
+        run: |
+          aws s3 cp findings/ s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/ --recursive
+          echo "Files uploaded to s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/"
+
+      # Upload as GitHub Actions artifacts
+      - name: Upload Findings as Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: inspector-findings-${{ steps.timestamp.outputs.timestamp }}
+          path: findings/
+          retention-days: 90
+          if-no-files-found: error
+
+      # Create formatted table of findings
+      - name: Create Formatted Table
+        if: steps.inspector.outputs.inspector_scan_results != ''
+        run: |
+          echo "=== Detailed Findings Table ==="
+          echo "| Severity | CVE ID | Package | Version | Description |"
+          echo "|----------|--------|---------|----------|-------------|"
+          if [ -f "${{ steps.inspector.outputs.inspector_scan_results }}" ]; then
+            cat "${{ steps.inspector.outputs.inspector_scan_results }}" | \
+            jq -r '.findings[]? | select(. != null) | "| \(.severity // "UNKNOWN") | \(.vulnerabilityId // "N/A") | \(.packageName // "N/A") | \(.packageVersion // "N/A") | \(.description // "No description") |"'
+          fi
+
+      # Optional: Clean up old S3 findings
+      - name: Clean up old findings
+        run: |
+          aws s3 ls s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/ | \
+          sort | \
+          head -n -30 | \
+          while read -r line; do
+            fileName=$(echo "$line" | awk '{print $4}')
+            if [ ! -z "$fileName" ]; then
+              aws s3 rm "s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/$fileName" --recursive
+            fi
+          done
+
+      # Optional: Send notification if findings exceed thresholds
+      - name: Check vulnerability threshold
+        if: steps.inspector.outputs.vulnerability_threshold_exceeded == '1'
+        run: |
+          aws sns publish \
+            --topic-arn "${{ secrets.SNS_TOPIC_ARN }}" \
+            --message "Inspector scan detected vulnerabilities exceeding threshold. 
+                      GitHub Actions Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+                      S3 Location: s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/"
+
+      # Generate summary of findings
+      - name: Create Job Summary
+        if: always()
+        run: |
+          echo "## Inspector Scan Results - ${{ steps.timestamp.outputs.timestamp }}" >> $GITHUB_STEP_SUMMARY
+          echo "### AWS Configuration:" >> $GITHUB_STEP_SUMMARY
+          echo "* Role ARN: ${{ secrets.AWS_ROLE_ARN }}" >> $GITHUB_STEP_SUMMARY
+          echo "* Region: ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "### Findings Locations:" >> $GITHUB_STEP_SUMMARY
+          echo "* S3 Bucket: s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/" >> $GITHUB_STEP_SUMMARY
+          echo "* GitHub Artifacts: See artifacts section above" >> $GITHUB_STEP_SUMMARY
+          if [ -f "${{ steps.inspector.outputs.inspector_scan_results_markdown }}" ]; then
+            echo "### Scan Summary" >> $GITHUB_STEP_SUMMARY
+            cat "${{ steps.inspector.outputs.inspector_scan_results_markdown }}" >> $GITHUB_STEP_SUMMARY
+          fi
