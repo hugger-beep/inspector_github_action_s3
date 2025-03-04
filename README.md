@@ -3,7 +3,7 @@
 Default: ubuntu:14.04
 Modify CONTAINER_IMAGE in workflow for different images
 
-#Usage
+# Usage
 Set up required GitHub secrets
 
 Configure AWS IAM role
