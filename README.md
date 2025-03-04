@@ -68,7 +68,9 @@ Package dependencies
 ## S3 File Structure
 
 s3://your-bucket/inspector-findings/
-└── YYYY-MM-DD-HH-MM-SS/
+
+├── YYYY-MM-DD-HH-MM-SS/
+
     ├── scan-info.txt
     
     ├── repository-paths.txt
