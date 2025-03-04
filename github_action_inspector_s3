@@ -36,7 +36,6 @@ jobs:
           aws sts get-caller-identity
           echo "Using role: ${{ secrets.AWS_ROLE_ARN }}"
           echo "AWS Region: ${{ secrets.AWS_REGION }}"
-
       - name: Inspector Scan
         id: inspector
         uses: aws-actions/vulnerability-scan-github-action-for-amazon-inspector@v1
@@ -81,7 +80,6 @@ jobs:
             echo "=== SBOM Output ==="
             cat "${{ steps.inspector.outputs.artifact_sbom }}" | jq '.'
           fi
-
       # Add timestamp to filename
       - name: Get timestamp
         id: timestamp
@@ -100,13 +98,11 @@ jobs:
               cp "$file" "findings/$(basename "$file")"
             fi
           done
-
       # Upload to S3
       - name: Upload to S3
         run: |
           aws s3 cp findings/ s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/ --recursive
           echo "Files uploaded to s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/"
-
       # Upload as GitHub Actions artifacts
       - name: Upload Findings as Artifacts
         uses: actions/upload-artifact@v4
@@ -127,7 +123,6 @@ jobs:
             cat "${{ steps.inspector.outputs.inspector_scan_results }}" | \
             jq -r '.findings[]? | select(. != null) | "| \(.severity // "UNKNOWN") | \(.vulnerabilityId // "N/A") | \(.packageName // "N/A") | \(.packageVersion // "N/A") | \(.description // "No description") |"'
           fi
-
       # Optional: Clean up old S3 findings
       - name: Clean up old findings
         run: |
@@ -140,7 +135,6 @@ jobs:
               aws s3 rm "s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/$fileName" --recursive
             fi
           done
-
       # Optional: Send notification if findings exceed thresholds
       - name: Check vulnerability threshold
         if: steps.inspector.outputs.vulnerability_threshold_exceeded == '1'
@@ -150,7 +144,6 @@ jobs:
             --message "Inspector scan detected vulnerabilities exceeding threshold. 
                       GitHub Actions Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
                       S3 Location: s3://${{ secrets.S3_BUCKET_NAME }}/inspector-findings/${{ steps.timestamp.outputs.timestamp }}/"
-
       # Generate summary of findings
       - name: Create Job Summary
         if: always()
