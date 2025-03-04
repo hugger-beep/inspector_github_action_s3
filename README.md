@@ -66,14 +66,20 @@ Package dependencies
 
 # Artifacts and Storage
 ## S3 File Structure
+
 s3://your-bucket/inspector-findings/
 └── YYYY-MM-DD-HH-MM-SS/
     ├── scan-info.txt
+    
     ├── repository-paths.txt
+    
     ├── report.html
+    
     ├── findings.json
+    
     ├── findings.csv
-    └── sbom.json
+    
+    ├── sbom.json
     
 ## GitHub Artifacts
 Retained for 90 days
